@@ -60,7 +60,11 @@ function setGlobalContext(context: ContextState) {
       symbol | string,
       ContextState | undefined
     >;
+    // Best-effort cache of the last active context so runtimes that lose
+    // AsyncLocalStorage propagation (or load a duplicate bundle) can still
+    // resume tracing.
     globalScope[CONTEXT_SYMBOL] = context;
+    allowGlobalContextFallback = true;
   } catch {
     // Best-effort only: if the global object is non-extensible (SES, locked-down
     // runtimes), swallow the failure and rely on AsyncLocalStorage/module-local
@@ -86,17 +90,41 @@ function getGlobalContext(): ContextState | undefined {
 function restoreGlobalContext(
   expectedContext: ContextState,
   previousContext?: ContextState,
+  expectedTrace?: Trace,
 ) {
   try {
+    // The global fallback can be swapped to a cloned context (e.g., via
+    // withNewSpanContext) while the trace is still active. Treat any context
+    // pointing at the same traceId as equivalent so we can clear or restore
+    // our own fallback without clobbering concurrent traces.
+    const matchesTrace = (left?: ContextState): boolean => {
+      if (!left) {
+        return false;
+      }
+
+      if (left === expectedContext) {
+        return true;
+      }
+
+      if (expectedTrace && left.trace) {
+        return left.trace.traceId === expectedTrace.traceId;
+      }
+
+      return false;
+    };
+
     const globalScope = globalThis as unknown as Record<
       symbol | string,
       ContextState | undefined
     >;
+    const currentGlobalContext = globalScope[CONTEXT_SYMBOL];
 
     // Only restore if the global fallback still points to the context this trace
     // installed. If another concurrent trace updated the global context in the
-    // meantime, leave it intact to avoid clobbering that run.
-    if (globalScope[CONTEXT_SYMBOL] !== expectedContext) {
+    // meantime, leave it intact to avoid clobbering that run. Consider contexts
+    // equivalent when they reference the same trace, even if a cloned context
+    // was installed (e.g., via withNewSpanContext).
+    if (!matchesTrace(currentGlobalContext)) {
       return;
     }
 
@@ -105,15 +133,20 @@ function restoreGlobalContext(
     } else {
       delete globalScope[CONTEXT_SYMBOL];
     }
+    allowGlobalContextFallback = Boolean(previousContext?.active);
   } catch {
     // If global mutation is disallowed, do not crash; tracing will continue to
     // rely on AsyncLocalStorage or module-local context.
+    allowGlobalContextFallback = Boolean(previousContext?.active);
   }
 }
 
 function getActiveContext() {
   const store = getContextAsyncLocalStorage().getStore();
   if (store) {
+    if (store.active === false) {
+      return undefined;
+    }
     return store;
   }
 
@@ -122,7 +155,7 @@ function getActiveContext() {
   }
 
   const fallback = getGlobalContext();
-  if (fallback?.active === false) {
+  if (!fallback?.active) {
     return undefined;
   }
 
@@ -168,15 +201,21 @@ function _wrapFunctionWithTraceLifecycle<T>(
   previousContext?: ContextState,
 ) {
   return async () => {
+    // Preserve the original trace reference so cleanup can recognize cloned
+    // contexts that may have been installed during nested span scopes.
+    const expectedTrace = currentContext.trace;
     const trace = getCurrentTrace();
     if (!trace) {
       throw new Error('No trace found');
     }
 
-    await trace.start();
     let cleanupDeferred = false;
+    let started = false;
 
     try {
+      await trace.start();
+      started = true;
+
       const result = await fn(trace);
 
       // If result is a StreamedRunResult, defer trace end until stream loop completes
@@ -185,10 +224,22 @@ function _wrapFunctionWithTraceLifecycle<T>(
         if (streamLoopPromise) {
           cleanupDeferred = true;
           streamLoopPromise.finally(async () => {
-            await trace.end();
+            if (started) {
+              await trace.end();
+            }
 
             currentContext.active = false;
-            restoreGlobalContext(currentContext, previousContext);
+            currentContext.trace = undefined;
+            currentContext.span = undefined;
+            currentContext.previousSpan = undefined;
+            restoreGlobalContext(
+              currentContext,
+              previousContext,
+              expectedTrace,
+            );
+            const nextContext =
+              previousContext ?? ({ active: false } as ContextState);
+            getContextAsyncLocalStorage().enterWith(nextContext);
           });
 
           return result;
@@ -196,7 +247,9 @@ function _wrapFunctionWithTraceLifecycle<T>(
       }
 
       // For non-streaming results, end trace synchronously
-      await trace.end();
+      if (started) {
+        await trace.end();
+      }
 
       return result;
     } finally {
@@ -205,7 +258,13 @@ function _wrapFunctionWithTraceLifecycle<T>(
       // mark inactive and restore now.
       if (!cleanupDeferred) {
         currentContext.active = false;
-        restoreGlobalContext(currentContext, previousContext);
+        currentContext.trace = undefined;
+        currentContext.span = undefined;
+        currentContext.previousSpan = undefined;
+        restoreGlobalContext(currentContext, previousContext, expectedTrace);
+        const nextContext =
+          previousContext ?? ({ active: false } as ContextState);
+        getContextAsyncLocalStorage().enterWith(nextContext);
       }
     }
   };
