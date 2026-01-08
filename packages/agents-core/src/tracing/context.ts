@@ -14,6 +14,7 @@ type ContextState = {
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
 let localFallbackAls: AsyncLocalStorage<ContextState> | undefined;
+let allowGlobalContextFallback = false;
 
 // Global symbols ensure that if multiple copies of agents-core are loaded
 // (e.g., via different npm resolution paths or bundlers), they all share the
@@ -38,6 +39,9 @@ function getContextAsyncLocalStorage() {
     globalScope[ALS_SYMBOL] = newALS;
     return newALS;
   } catch {
+    // Only allow global fallback lookups if the runtime failed to construct
+    // AsyncLocalStorage (e.g., locked-down globalThis or limited runtime).
+    allowGlobalContextFallback = true;
     // As a defensive fallback (e.g., if globalThis is locked down or ALS
     // construction throws in a constrained runtime), keep a module-local ALS
     // so tracing still functions instead of crashing callers.
@@ -92,14 +96,31 @@ function restoreGlobalContext(
   }
 }
 
+function getActiveContext() {
+  const store = getContextAsyncLocalStorage().getStore();
+  if (store) {
+    return store;
+  }
+
+  if (!allowGlobalContextFallback) {
+    return undefined;
+  }
+
+  const fallback = getGlobalContext();
+  if (fallback?.active === false) {
+    return undefined;
+  }
+
+  return fallback;
+}
+
 /**
  * This function will get the current trace from the execution context.
  *
  * @returns The current trace or null if there is no trace.
  */
 export function getCurrentTrace() {
-  const currentTrace =
-    getContextAsyncLocalStorage().getStore() ?? getGlobalContext();
+  const currentTrace = getActiveContext();
   if (currentTrace?.trace) {
     return currentTrace.trace;
   }
@@ -113,8 +134,7 @@ export function getCurrentTrace() {
  * @returns The current span or null if there is no span.
  */
 export function getCurrentSpan() {
-  const currentSpan =
-    getContextAsyncLocalStorage().getStore() ?? getGlobalContext();
+  const currentSpan = getActiveContext();
   if (currentSpan?.span) {
     return currentSpan.span;
   }
@@ -221,8 +241,7 @@ export async function getOrCreateTrace<T>(
   const currentTrace = getCurrentTrace();
   if (currentTrace) {
     // if this execution context already has a trace instance in it we just continue
-    const existingContext =
-      getContextAsyncLocalStorage().getStore() ?? getGlobalContext();
+    const existingContext = getActiveContext();
     if (existingContext) {
       setGlobalContext(existingContext);
       getContextAsyncLocalStorage().enterWith(existingContext);
@@ -247,8 +266,7 @@ export async function getOrCreateTrace<T>(
  * @param span - The span to set as the current span.
  */
 export function setCurrentSpan(span: Span<any>) {
-  const context =
-    getContextAsyncLocalStorage().getStore() ?? getGlobalContext();
+  const context = getActiveContext();
   if (!context) {
     throw new Error('No existing trace found');
   }
@@ -265,8 +283,7 @@ export function setCurrentSpan(span: Span<any>) {
 }
 
 export function resetCurrentSpan() {
-  const context =
-    getContextAsyncLocalStorage().getStore() ?? getGlobalContext();
+  const context = getActiveContext();
   if (context) {
     context.span = context.previousSpan;
     context.previousSpan = context.previousSpan?.previousSpan;
@@ -299,6 +316,7 @@ export function cloneCurrentContext(context: ContextState) {
     trace: context.trace?.clone(),
     span: context.span?.clone(),
     previousSpan: context.previousSpan?.clone(),
+    active: context.active ?? true,
   };
 }
 
@@ -308,8 +326,7 @@ export function cloneCurrentContext(context: ContextState) {
  * @param fn - The function to run with the new span context.
  */
 export function withNewSpanContext<T>(fn: () => Promise<T>) {
-  const currentContext =
-    getContextAsyncLocalStorage().getStore() ?? getGlobalContext();
+  const currentContext = getActiveContext();
   if (!currentContext) {
     return fn();
   }
