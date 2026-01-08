@@ -478,6 +478,41 @@ describe('withTrace & span helpers (integration)', () => {
     });
   });
 
+  it('withNewSpanContext does not drop owner token when another trace overwrote fallback', async () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
+
+    await withTrace('outer', async () => {
+      const owners: Set<symbol> =
+        (globalThis as any)[OWNERS_SYMBOL] ?? new Set<symbol>();
+      const outerContext = (globalThis as any)[CONTEXT_SYMBOL];
+      const outerOwner = outerContext?.fallbackOwnerToken;
+      expect(outerOwner).toBeDefined();
+
+      const foreignOwner = Symbol('foreign');
+      owners.add(foreignOwner);
+      (globalThis as any)[OWNERS_SYMBOL] = owners;
+      // Simulate another trace overwriting the global fallback while the outer
+      // trace is still active.
+      (globalThis as any)[CONTEXT_SYMBOL] = {
+        trace: new Trace({ name: 'foreign' }),
+        active: true,
+        fallbackOwnerToken: foreignOwner,
+      };
+
+      await withNewSpanContext(async () => {
+        expect(getCurrentTrace()).not.toBeNull();
+      });
+
+      // Owner set should still include the outer owner token.
+      expect(owners.has(outerOwner)).toBe(true);
+      expect(owners.size).toBeGreaterThanOrEqual(2);
+
+      owners.clear();
+      delete (globalThis as any)[CONTEXT_SYMBOL];
+    });
+  });
+
   it('sets previousSpan when updating the current span and maintains reset stack', async () => {
     await withTrace('workflow', async () => {
       const spanA = createAgentSpan({ data: { name: 'A' } });

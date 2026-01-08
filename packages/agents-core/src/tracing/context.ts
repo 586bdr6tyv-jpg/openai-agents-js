@@ -115,6 +115,7 @@ function restoreGlobalContext(
   expectedContext: ContextState,
   previousContext?: ContextState,
   expectedTrace?: Trace,
+  options?: { removeOwnerToken?: boolean },
 ) {
   try {
     // The global fallback can be swapped to a cloned context (e.g., via
@@ -143,9 +144,12 @@ function restoreGlobalContext(
     >;
     const currentGlobalContext = globalScope[CONTEXT_SYMBOL];
 
+    const shouldMutateOwners =
+      options?.removeOwnerToken ?? expectedContext.active === false;
+
     // Always remove our owner token even if another trace replaced the global
     // fallback; this keeps the owner count accurate for fallback gating.
-    if (expectedContext.fallbackOwnerToken) {
+    if (shouldMutateOwners && expectedContext.fallbackOwnerToken) {
       getFallbackOwnerSet().delete(expectedContext.fallbackOwnerToken);
     }
 
@@ -160,7 +164,7 @@ function restoreGlobalContext(
 
     if (previousContext?.active) {
       globalScope[CONTEXT_SYMBOL] = previousContext;
-      if (previousContext.fallbackOwnerToken) {
+      if (shouldMutateOwners && previousContext.fallbackOwnerToken) {
         getFallbackOwnerSet().add(previousContext.fallbackOwnerToken);
       }
     } else {
@@ -511,7 +515,14 @@ export function withNewSpanContext<T>(fn: () => Promise<T>) {
     try {
       return await fn();
     } finally {
-      restoreGlobalContext(copyOfContext, previousGlobalContext, expectedTrace);
+      restoreGlobalContext(
+        copyOfContext,
+        previousGlobalContext,
+        expectedTrace,
+        {
+          removeOwnerToken: false,
+        },
+      );
       const nextContext = selectNextContext({
         previousAlsStore,
         previousFallbackContext: previousGlobalContext,
