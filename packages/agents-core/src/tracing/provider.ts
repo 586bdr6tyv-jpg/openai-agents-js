@@ -232,10 +232,16 @@ function hasOtherListenersForEvents(event: 'unhandledRejection'): boolean {
   return process.listeners(event).length > 1;
 }
 
-let GLOBAL_TRACE_PROVIDER: TraceProvider | undefined = undefined;
 export function getGlobalTraceProvider(): TraceProvider {
-  if (!GLOBAL_TRACE_PROVIDER) {
-    GLOBAL_TRACE_PROVIDER = new TraceProvider();
+  const symbol = Symbol.for('openai.agents.core.traceProvider');
+  const globalHolder = globalThis as unknown as Record<
+    symbol | string,
+    TraceProvider | undefined
+  >;
+
+  if (!globalHolder[symbol]) {
+    globalHolder[symbol] = new TraceProvider();
   }
-  return GLOBAL_TRACE_PROVIDER;
+
+  return globalHolder[symbol];
 }
