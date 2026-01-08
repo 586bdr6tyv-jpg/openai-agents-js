@@ -118,26 +118,6 @@ function restoreGlobalContext(
   options?: { removeOwnerToken?: boolean },
 ) {
   try {
-    // The global fallback can be swapped to a cloned context (e.g., via
-    // withNewSpanContext) while the trace is still active. Treat any context
-    // pointing at the same traceId as equivalent so we can clear or restore
-    // our own fallback without clobbering concurrent traces.
-    const matchesTrace = (left?: ContextState): boolean => {
-      if (!left) {
-        return false;
-      }
-
-      if (left === expectedContext) {
-        return true;
-      }
-
-      if (expectedTrace && left.trace) {
-        return left.trace.traceId === expectedTrace.traceId;
-      }
-
-      return false;
-    };
-
     const globalScope = globalThis as unknown as Record<
       symbol | string,
       ContextState | undefined
@@ -158,6 +138,29 @@ function restoreGlobalContext(
     // meantime, leave it intact to avoid clobbering that run. Consider contexts
     // equivalent when they reference the same trace, even if a cloned context
     // was installed (e.g., via withNewSpanContext).
+    const matchesTrace = (left?: ContextState): boolean => {
+      if (!left) {
+        return false;
+      }
+
+      if (left === expectedContext) {
+        return true;
+      }
+
+      if (
+        expectedContext.fallbackOwnerToken &&
+        left.fallbackOwnerToken === expectedContext.fallbackOwnerToken
+      ) {
+        return true;
+      }
+
+      if (expectedTrace && left.trace) {
+        return left.trace === expectedTrace;
+      }
+
+      return false;
+    };
+
     if (!matchesTrace(currentGlobalContext)) {
       return;
     }

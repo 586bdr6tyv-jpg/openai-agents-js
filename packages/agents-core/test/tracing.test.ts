@@ -494,8 +494,12 @@ describe('withTrace & span helpers (integration)', () => {
       (globalThis as any)[OWNERS_SYMBOL] = owners;
       // Simulate another trace overwriting the global fallback while the outer
       // trace is still active.
+      const foreignTrace = new Trace({
+        name: 'foreign',
+        traceId: outerContext.trace?.traceId,
+      });
       (globalThis as any)[CONTEXT_SYMBOL] = {
-        trace: new Trace({ name: 'foreign' }),
+        trace: foreignTrace,
         active: true,
         fallbackOwnerToken: foreignOwner,
       };
