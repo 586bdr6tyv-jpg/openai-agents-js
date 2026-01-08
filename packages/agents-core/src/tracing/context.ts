@@ -199,6 +199,7 @@ function _wrapFunctionWithTraceLifecycle<T>(
   fn: (trace: Trace) => Promise<T>,
   currentContext: ContextState,
   previousContext?: ContextState,
+  previousAlsStore?: ContextState,
 ) {
   return async () => {
     // Preserve the original trace reference so cleanup can recognize cloned
@@ -238,7 +239,9 @@ function _wrapFunctionWithTraceLifecycle<T>(
               expectedTrace,
             );
             const nextContext =
-              previousContext ?? ({ active: false } as ContextState);
+              previousAlsStore ??
+              previousContext ??
+              ({ active: false } as ContextState);
             getContextAsyncLocalStorage().enterWith(nextContext);
           });
 
@@ -263,7 +266,9 @@ function _wrapFunctionWithTraceLifecycle<T>(
         currentContext.previousSpan = undefined;
         restoreGlobalContext(currentContext, previousContext, expectedTrace);
         const nextContext =
-          previousContext ?? ({ active: false } as ContextState);
+          previousAlsStore ??
+          previousContext ??
+          ({ active: false } as ContextState);
         getContextAsyncLocalStorage().enterWith(nextContext);
       }
     }
@@ -293,11 +298,17 @@ export async function withTrace<T>(
 
   const context: ContextState = { trace: newTrace, active: true };
   const previousContext = getGlobalContext();
+  const previousAlsStore = getContextAsyncLocalStorage().getStore();
   setGlobalContext(context);
 
   return getContextAsyncLocalStorage().run(
     context,
-    _wrapFunctionWithTraceLifecycle(fn, context, previousContext),
+    _wrapFunctionWithTraceLifecycle(
+      fn,
+      context,
+      previousContext,
+      previousAlsStore,
+    ),
   );
 }
 /**
@@ -327,10 +338,16 @@ export async function getOrCreateTrace<T>(
 
   const newContext: ContextState = { trace: newTrace, active: true };
   const previousContext = getGlobalContext();
+  const previousAlsStore = getContextAsyncLocalStorage().getStore();
   setGlobalContext(newContext);
   return getContextAsyncLocalStorage().run(
     newContext,
-    _wrapFunctionWithTraceLifecycle(fn, newContext, previousContext),
+    _wrapFunctionWithTraceLifecycle(
+      fn,
+      newContext,
+      previousContext,
+      previousAlsStore,
+    ),
   );
 }
 
