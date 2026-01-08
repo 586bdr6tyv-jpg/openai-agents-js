@@ -406,6 +406,20 @@ export function withNewSpanContext<T>(fn: () => Promise<T>) {
   }
 
   const copyOfContext = cloneCurrentContext(currentContext);
+  const previousGlobalContext = getGlobalContext();
+  // Make the cloned context visible via the global fallback so runtimes without
+  // AsyncLocalStorage propagation can still resolve the current span/trace.
+  setGlobalContext(copyOfContext);
+  const expectedTrace = currentContext.trace ?? copyOfContext.trace;
 
-  return getContextAsyncLocalStorage().run(copyOfContext, fn);
+  return getContextAsyncLocalStorage().run(copyOfContext, async () => {
+    try {
+      return await fn();
+    } finally {
+      restoreGlobalContext(copyOfContext, previousGlobalContext, expectedTrace);
+      const nextContext =
+        previousGlobalContext ?? ({ active: false } as ContextState);
+      getContextAsyncLocalStorage().enterWith(nextContext);
+    }
+  });
 }

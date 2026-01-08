@@ -34,6 +34,10 @@ import {
   setCurrentSpan,
   resetCurrentSpan,
 } from '../src/tracing';
+import {
+  cloneCurrentContext,
+  withNewSpanContext,
+} from '../src/tracing/context';
 
 import { withAgentSpan, createAgentSpan } from '../src/tracing/createSpans';
 
@@ -325,6 +329,21 @@ describe('withTrace & span helpers (integration)', () => {
     expect(processor.tracesEnded.length).toBe(1);
   });
 
+  it('clears global fallback even when a cloned context is installed', async () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+
+    await withTrace('workflow', async () => {
+      const current = (globalThis as any)[CONTEXT_SYMBOL];
+      expect(current?.trace?.traceId).toBeDefined();
+
+      const cloned = cloneCurrentContext(current);
+      // Simulate a nested scope installing a cloned context on the global fallback.
+      (globalThis as any)[CONTEXT_SYMBOL] = cloned;
+    });
+
+    expect((globalThis as any)[CONTEXT_SYMBOL]).toBeUndefined();
+  });
+
   it('withAgentSpan nests a span within a trace and resets current span afterwards', async () => {
     let capturedSpanId: string | null = null;
 
@@ -347,6 +366,25 @@ describe('withTrace & span helpers (integration)', () => {
     const endedIds = processor.spansEnded.map((s) => s.spanId);
     expect(startedIds).toContain(capturedSpanId);
     expect(endedIds).toContain(capturedSpanId);
+  });
+
+  it('withNewSpanContext restores the previous global fallback after exiting', async () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+
+    await withTrace('workflow', async () => {
+      const outerContext = (globalThis as any)[CONTEXT_SYMBOL];
+      expect(outerContext?.trace?.traceId).toBeDefined();
+
+      await withNewSpanContext(async () => {
+        const innerContext = (globalThis as any)[CONTEXT_SYMBOL];
+        expect(innerContext).not.toBe(outerContext);
+        expect(innerContext?.trace?.traceId).toBe(outerContext.trace?.traceId);
+      });
+
+      expect((globalThis as any)[CONTEXT_SYMBOL]).toBe(outerContext);
+    });
+
+    expect((globalThis as any)[CONTEXT_SYMBOL]).toBeUndefined();
   });
 
   it('sets previousSpan when updating the current span and maintains reset stack', async () => {
