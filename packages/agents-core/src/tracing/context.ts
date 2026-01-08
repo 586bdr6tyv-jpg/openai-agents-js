@@ -9,12 +9,35 @@ type ContextState = {
   span?: Span<any>;
   previousSpan?: Span<any>;
   active?: boolean;
+  // Unique per trace; used only for identity checks to gate global fallback usage.
+  fallbackOwnerToken?: symbol;
 };
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+const FALLBACK_OWNERS_SYMBOL = Symbol.for(
+  'openai.agents.core.globalFallbackOwners',
+);
 let localFallbackAls: AsyncLocalStorage<ContextState> | undefined;
-let allowGlobalContextFallback = false;
+let localFallbackOwners: Set<symbol> | undefined;
+
+function getFallbackOwnerSet() {
+  try {
+    const globalScope = globalThis as unknown as Record<
+      symbol | string,
+      Set<symbol> | undefined
+    >;
+    if (!globalScope[FALLBACK_OWNERS_SYMBOL]) {
+      globalScope[FALLBACK_OWNERS_SYMBOL] = new Set<symbol>();
+    }
+    return globalScope[FALLBACK_OWNERS_SYMBOL]!;
+  } catch {
+    if (!localFallbackOwners) {
+      localFallbackOwners = new Set<symbol>();
+    }
+    return localFallbackOwners;
+  }
+}
 
 // Global symbols ensure that if multiple copies of agents-core are loaded
 // (e.g., via different npm resolution paths or bundlers), they all share the
@@ -41,7 +64,6 @@ function getContextAsyncLocalStorage() {
   } catch {
     // Only allow global fallback lookups if the runtime failed to construct
     // AsyncLocalStorage (e.g., locked-down globalThis or limited runtime).
-    allowGlobalContextFallback = true;
     // As a defensive fallback (e.g., if globalThis is locked down or ALS
     // construction throws in a constrained runtime), keep a module-local ALS
     // so tracing still functions instead of crashing callers.
@@ -64,7 +86,9 @@ function setGlobalContext(context: ContextState) {
     // AsyncLocalStorage propagation (or load a duplicate bundle) can still
     // resume tracing.
     globalScope[CONTEXT_SYMBOL] = context;
-    allowGlobalContextFallback = true;
+    if (context.fallbackOwnerToken) {
+      getFallbackOwnerSet().add(context.fallbackOwnerToken);
+    }
   } catch {
     // Best-effort only: if the global object is non-extensible (SES, locked-down
     // runtimes), swallow the failure and rely on AsyncLocalStorage/module-local
@@ -119,6 +143,12 @@ function restoreGlobalContext(
     >;
     const currentGlobalContext = globalScope[CONTEXT_SYMBOL];
 
+    // Always remove our owner token even if another trace replaced the global
+    // fallback; this keeps the owner count accurate for fallback gating.
+    if (expectedContext.fallbackOwnerToken) {
+      getFallbackOwnerSet().delete(expectedContext.fallbackOwnerToken);
+    }
+
     // Only restore if the global fallback still points to the context this trace
     // installed. If another concurrent trace updated the global context in the
     // meantime, leave it intact to avoid clobbering that run. Consider contexts
@@ -130,14 +160,15 @@ function restoreGlobalContext(
 
     if (previousContext?.active) {
       globalScope[CONTEXT_SYMBOL] = previousContext;
+      if (previousContext.fallbackOwnerToken) {
+        getFallbackOwnerSet().add(previousContext.fallbackOwnerToken);
+      }
     } else {
       delete globalScope[CONTEXT_SYMBOL];
     }
-    allowGlobalContextFallback = Boolean(previousContext?.active);
   } catch {
     // If global mutation is disallowed, do not crash; tracing will continue to
     // rely on AsyncLocalStorage or module-local context.
-    allowGlobalContextFallback = Boolean(previousContext?.active);
   }
 }
 
@@ -151,22 +182,25 @@ function getActiveContext() {
   }
 
   const fallback = getGlobalContext();
-  if (fallback?.active) {
-    // If another bundle already installed a global fallback, allow reads even
-    // if this module never wrote to the global context (duplicate bundle case).
-    allowGlobalContextFallback = true;
+  if (!fallback || fallback.active === false) {
+    return undefined;
+  }
+
+  const owners = getFallbackOwnerSet();
+  const ownerToken = fallback.fallbackOwnerToken;
+
+  // Only use the global fallback when we can confirm a single active owner.
+  // This avoids cross-trace leakage when AsyncLocalStorage propagation is lost
+  // but multiple traces are running concurrently.
+  if (ownerToken && owners.has(ownerToken) && owners.size === 1) {
     return fallback;
   }
 
-  if (!allowGlobalContextFallback) {
-    return undefined;
+  if (!ownerToken && owners.size <= 1) {
+    return fallback;
   }
 
-  if (fallback?.active === false) {
-    return undefined;
-  }
-
-  return fallback;
+  return undefined;
 }
 
 /**
@@ -220,6 +254,19 @@ function _wrapFunctionWithTraceLifecycle<T>(
     let cleanupDeferred = false;
     let started = false;
 
+    const cleanupContext = () => {
+      currentContext.active = false;
+      currentContext.trace = undefined;
+      currentContext.span = undefined;
+      currentContext.previousSpan = undefined;
+      restoreGlobalContext(currentContext, previousContext, expectedTrace);
+      const nextContext =
+        previousAlsStore ??
+        previousContext ??
+        ({ active: false } as ContextState);
+      getContextAsyncLocalStorage().enterWith(nextContext);
+    };
+
     try {
       await trace.start();
       started = true;
@@ -236,20 +283,7 @@ function _wrapFunctionWithTraceLifecycle<T>(
               await trace.end();
             }
 
-            currentContext.active = false;
-            currentContext.trace = undefined;
-            currentContext.span = undefined;
-            currentContext.previousSpan = undefined;
-            restoreGlobalContext(
-              currentContext,
-              previousContext,
-              expectedTrace,
-            );
-            const nextContext =
-              previousAlsStore ??
-              previousContext ??
-              ({ active: false } as ContextState);
-            getContextAsyncLocalStorage().enterWith(nextContext);
+            cleanupContext();
           });
 
           return result;
@@ -267,16 +301,7 @@ function _wrapFunctionWithTraceLifecycle<T>(
       // active so concurrent traces do not clear it prematurely. Otherwise,
       // mark inactive and restore now.
       if (!cleanupDeferred) {
-        currentContext.active = false;
-        currentContext.trace = undefined;
-        currentContext.span = undefined;
-        currentContext.previousSpan = undefined;
-        restoreGlobalContext(currentContext, previousContext, expectedTrace);
-        const nextContext =
-          previousAlsStore ??
-          previousContext ??
-          ({ active: false } as ContextState);
-        getContextAsyncLocalStorage().enterWith(nextContext);
+        cleanupContext();
       }
     }
   };
@@ -303,7 +328,11 @@ export async function withTrace<T>(
         })
       : trace;
 
-  const context: ContextState = { trace: newTrace, active: true };
+  const context: ContextState = {
+    trace: newTrace,
+    active: true,
+    fallbackOwnerToken: Symbol('trace-fallback-owner'),
+  };
   const previousContext = getGlobalContext();
   const previousAlsStore = getContextAsyncLocalStorage().getStore();
   setGlobalContext(context);
@@ -335,6 +364,9 @@ export async function getOrCreateTrace<T>(
     // if this execution context already has a trace instance in it we just continue
     const existingContext = getActiveContext();
     if (existingContext) {
+      if (!existingContext.fallbackOwnerToken) {
+        existingContext.fallbackOwnerToken = Symbol('trace-fallback-owner');
+      }
       setGlobalContext(existingContext);
       getContextAsyncLocalStorage().enterWith(existingContext);
     }
@@ -343,7 +375,11 @@ export async function getOrCreateTrace<T>(
 
   const newTrace = getGlobalTraceProvider().createTrace(options);
 
-  const newContext: ContextState = { trace: newTrace, active: true };
+  const newContext: ContextState = {
+    trace: newTrace,
+    active: true,
+    fallbackOwnerToken: Symbol('trace-fallback-owner'),
+  };
   const previousContext = getGlobalContext();
   const previousAlsStore = getContextAsyncLocalStorage().getStore();
   setGlobalContext(newContext);
@@ -415,6 +451,7 @@ export function cloneCurrentContext(context: ContextState) {
     span: context.span?.clone(),
     previousSpan: context.previousSpan?.clone(),
     active: context.active ?? true,
+    fallbackOwnerToken: context.fallbackOwnerToken,
   };
 }
 
@@ -429,6 +466,9 @@ export function withNewSpanContext<T>(fn: () => Promise<T>) {
     return fn();
   }
 
+  if (!currentContext.fallbackOwnerToken) {
+    currentContext.fallbackOwnerToken = Symbol('trace-fallback-owner');
+  }
   const copyOfContext = cloneCurrentContext(currentContext);
   const previousGlobalContext = getGlobalContext();
   // Make the cloned context visible via the global fallback so runtimes without

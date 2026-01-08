@@ -344,6 +344,50 @@ describe('withTrace & span helpers (integration)', () => {
     expect((globalThis as any)[CONTEXT_SYMBOL]).toBeUndefined();
   });
 
+  it('uses global fallback only when a single trace owner is active', () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
+    const ownerToken = Symbol('owner');
+
+    const context = {
+      trace: new Trace({ name: 'global-fallback' }),
+      active: true,
+      fallbackOwnerToken: ownerToken,
+    } as any;
+
+    (globalThis as any)[OWNERS_SYMBOL] = new Set<symbol>([ownerToken]);
+    (globalThis as any)[CONTEXT_SYMBOL] = context;
+
+    expect(getCurrentTrace()?.traceId).toBe(context.trace.traceId);
+
+    (globalThis as any)[OWNERS_SYMBOL].clear();
+    delete (globalThis as any)[CONTEXT_SYMBOL];
+  });
+
+  it('ignores global fallback when multiple trace owners are active', () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
+    const ownerA = Symbol('ownerA');
+    const ownerB = Symbol('ownerB');
+
+    const contextA = {
+      trace: new Trace({ name: 'A' }),
+      active: true,
+      fallbackOwnerToken: ownerA,
+    } as any;
+
+    const owners = new Set<symbol>();
+    owners.add(ownerA);
+    owners.add(ownerB);
+    (globalThis as any)[OWNERS_SYMBOL] = owners;
+    (globalThis as any)[CONTEXT_SYMBOL] = contextA;
+
+    expect(getCurrentTrace()).toBeNull();
+
+    owners.clear();
+    delete (globalThis as any)[CONTEXT_SYMBOL];
+  });
+
   it('withAgentSpan nests a span within a trace and resets current span afterwards', async () => {
     let capturedSpanId: string | null = null;
 
