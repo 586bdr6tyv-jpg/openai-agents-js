@@ -150,12 +150,19 @@ function getActiveContext() {
     return store;
   }
 
+  const fallback = getGlobalContext();
+  if (fallback?.active) {
+    // If another bundle already installed a global fallback, allow reads even
+    // if this module never wrote to the global context (duplicate bundle case).
+    allowGlobalContextFallback = true;
+    return fallback;
+  }
+
   if (!allowGlobalContextFallback) {
     return undefined;
   }
 
-  const fallback = getGlobalContext();
-  if (!fallback?.active) {
+  if (fallback?.active === false) {
     return undefined;
   }
 
