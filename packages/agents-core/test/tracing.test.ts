@@ -388,6 +388,35 @@ describe('withTrace & span helpers (integration)', () => {
     delete (globalThis as any)[CONTEXT_SYMBOL];
   });
 
+  it('does not restore a foreign global context into ALS when there was no store', async () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
+    const foreignOwner = Symbol('foreign');
+    const otherOwner = Symbol('other');
+
+    const foreignContext = {
+      trace: new Trace({ name: 'foreign' }),
+      active: true,
+      fallbackOwnerToken: foreignOwner,
+    } as any;
+
+    const owners = new Set<symbol>([foreignOwner, otherOwner]);
+    (globalThis as any)[OWNERS_SYMBOL] = owners;
+    (globalThis as any)[CONTEXT_SYMBOL] = foreignContext;
+
+    await withTrace('local', async (trace) => {
+      expect(getCurrentTrace()?.traceId).toBe(trace.traceId);
+    });
+
+    // Fallback is gated (owners > 1) so the ALS store must not have been
+    // restored to the foreign context; otherwise the current trace would
+    // resolve to the foreign one here.
+    expect(getCurrentTrace()).toBeNull();
+
+    owners.clear();
+    delete (globalThis as any)[CONTEXT_SYMBOL];
+  });
+
   it('withAgentSpan nests a span within a trace and resets current span afterwards', async () => {
     let capturedSpanId: string | null = null;
 

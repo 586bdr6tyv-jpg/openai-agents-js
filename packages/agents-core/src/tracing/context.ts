@@ -260,10 +260,11 @@ function _wrapFunctionWithTraceLifecycle<T>(
       currentContext.span = undefined;
       currentContext.previousSpan = undefined;
       restoreGlobalContext(currentContext, previousContext, expectedTrace);
+      // Restore the original ALS store when present; otherwise reset to an
+      // inactive sentinel to avoid installing a different trace from the global
+      // fallback into this async chain.
       const nextContext =
-        previousAlsStore ??
-        previousContext ??
-        ({ active: false } as ContextState);
+        previousAlsStore ?? ({ active: false } as ContextState);
       getContextAsyncLocalStorage().enterWith(nextContext);
     };
 
