@@ -203,6 +203,34 @@ function getActiveContext() {
   return undefined;
 }
 
+function selectNextContext({
+  previousAlsStore,
+  previousFallbackContext,
+}: {
+  previousAlsStore?: ContextState;
+  previousFallbackContext?: ContextState;
+}) {
+  // Prefer the original ALS store; if missing, only re-install the global
+  // fallback when a single owner is active to avoid cross-trace contamination.
+  if (previousAlsStore) {
+    return previousAlsStore;
+  }
+
+  const fallbackOwners = getFallbackOwnerSet();
+  const canRestoreFallback =
+    previousFallbackContext?.active &&
+    previousFallbackContext.fallbackOwnerToken &&
+    fallbackOwners.size === 1 &&
+    fallbackOwners.has(previousFallbackContext.fallbackOwnerToken);
+
+  if (canRestoreFallback) {
+    return previousFallbackContext;
+  }
+
+  // No safe fallback available—return an inactive sentinel to clear the store.
+  return { active: false } as ContextState;
+}
+
 /**
  * This function will get the current trace from the execution context.
  *
@@ -260,11 +288,10 @@ function _wrapFunctionWithTraceLifecycle<T>(
       currentContext.span = undefined;
       currentContext.previousSpan = undefined;
       restoreGlobalContext(currentContext, previousContext, expectedTrace);
-      // Restore the original ALS store when present; otherwise reset to an
-      // inactive sentinel to avoid installing a different trace from the global
-      // fallback into this async chain.
-      const nextContext =
-        previousAlsStore ?? ({ active: false } as ContextState);
+      const nextContext = selectNextContext({
+        previousAlsStore,
+        previousFallbackContext: previousContext,
+      });
       getContextAsyncLocalStorage().enterWith(nextContext);
     };
 
@@ -485,10 +512,10 @@ export function withNewSpanContext<T>(fn: () => Promise<T>) {
       return await fn();
     } finally {
       restoreGlobalContext(copyOfContext, previousGlobalContext, expectedTrace);
-      const nextContext =
-        previousAlsStore ??
-        previousGlobalContext ??
-        ({ active: false } as ContextState);
+      const nextContext = selectNextContext({
+        previousAlsStore,
+        previousFallbackContext: previousGlobalContext,
+      });
       getContextAsyncLocalStorage().enterWith(nextContext);
     }
   });
