@@ -280,11 +280,13 @@ function _wrapFunctionWithTraceLifecycle<T>(
         if (streamLoopPromise) {
           cleanupDeferred = true;
           streamLoopPromise.finally(async () => {
-            if (started) {
-              await trace.end();
+            try {
+              if (started) {
+                await trace.end();
+              }
+            } finally {
+              cleanupContext();
             }
-
-            cleanupContext();
           });
 
           return result;
@@ -472,6 +474,7 @@ export function withNewSpanContext<T>(fn: () => Promise<T>) {
   }
   const copyOfContext = cloneCurrentContext(currentContext);
   const previousGlobalContext = getGlobalContext();
+  const previousAlsStore = getContextAsyncLocalStorage().getStore();
   // Make the cloned context visible via the global fallback so runtimes without
   // AsyncLocalStorage propagation can still resolve the current span/trace.
   setGlobalContext(copyOfContext);
@@ -483,7 +486,9 @@ export function withNewSpanContext<T>(fn: () => Promise<T>) {
     } finally {
       restoreGlobalContext(copyOfContext, previousGlobalContext, expectedTrace);
       const nextContext =
-        previousGlobalContext ?? ({ active: false } as ContextState);
+        previousAlsStore ??
+        previousGlobalContext ??
+        ({ active: false } as ContextState);
       getContextAsyncLocalStorage().enterWith(nextContext);
     }
   });

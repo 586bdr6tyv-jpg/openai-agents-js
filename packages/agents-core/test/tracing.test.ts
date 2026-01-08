@@ -460,6 +460,24 @@ describe('withTrace & span helpers (integration)', () => {
     expect((globalThis as any)[CONTEXT_SYMBOL]).toBeUndefined();
   });
 
+  it('withNewSpanContext keeps ALS context when global fallback is absent', async () => {
+    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
+
+    await withTrace('workflow', async () => {
+      // Simulate a locked-down global by clearing fallback visibility.
+      delete (globalThis as any)[CONTEXT_SYMBOL];
+      delete (globalThis as any)[OWNERS_SYMBOL];
+
+      await withNewSpanContext(async () => {
+        expect(getCurrentTrace()).not.toBeNull();
+      });
+
+      // After exiting, ALS should still have the outer trace.
+      expect(getCurrentTrace()).not.toBeNull();
+    });
+  });
+
   it('sets previousSpan when updating the current span and maintains reset stack', async () => {
     await withTrace('workflow', async () => {
       const spanA = createAgentSpan({ data: { name: 'A' } });
