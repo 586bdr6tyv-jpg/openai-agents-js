@@ -224,6 +224,8 @@ export class TraceProvider {
   }
 }
 
+let moduleTraceProvider: TraceProvider | undefined;
+
 function hasOtherListenersForSignals(event: 'SIGINT' | 'SIGTERM'): boolean {
   return process.listeners(event).length > 1;
 }
@@ -234,14 +236,24 @@ function hasOtherListenersForEvents(event: 'unhandledRejection'): boolean {
 
 export function getGlobalTraceProvider(): TraceProvider {
   const symbol = Symbol.for('openai.agents.core.traceProvider');
-  const globalHolder = globalThis as unknown as Record<
-    symbol | string,
-    TraceProvider | undefined
-  >;
 
-  if (!globalHolder[symbol]) {
-    globalHolder[symbol] = new TraceProvider();
+  try {
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+
+    if (!globalHolder[symbol]) {
+      globalHolder[symbol] = new TraceProvider();
+    }
+
+    return globalHolder[symbol];
+  } catch {
+    // Hardened runtimes can freeze or seal globalThis; fall back to a
+    // module-local singleton instead of throwing so tracing still works.
+    if (!moduleTraceProvider) {
+      moduleTraceProvider = new TraceProvider();
+    }
+    return moduleTraceProvider;
   }
-
-  return globalHolder[symbol];
 }

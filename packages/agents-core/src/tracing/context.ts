@@ -55,44 +55,59 @@ function getContextAsyncLocalStorage() {
 // Store the latest context in globalThis so that, if AsyncLocalStorage store
 // lookup fails (duplicate copy, boundary hops), we can still resume tracing.
 function setGlobalContext(context: ContextState) {
-  const globalScope = globalThis as unknown as Record<
-    symbol | string,
-    ContextState | undefined
-  >;
-  globalScope[CONTEXT_SYMBOL] = context;
+  try {
+    const globalScope = globalThis as unknown as Record<
+      symbol | string,
+      ContextState | undefined
+    >;
+    globalScope[CONTEXT_SYMBOL] = context;
+  } catch {
+    // Best-effort only: if the global object is non-extensible (SES, locked-down
+    // runtimes), swallow the failure and rely on AsyncLocalStorage/module-local
+    // context rather than crashing the caller.
+  }
 }
 
 // Retrieve the fallback context if AsyncLocalStorage has no store. This is
 // a best-effort safety net for environments that accidentally load multiple
 // copies of agents-core or lose ALS scope (e.g., certain worker runtimes).
 function getGlobalContext(): ContextState | undefined {
-  const globalScope = globalThis as unknown as Record<
-    symbol | string,
-    ContextState | undefined
-  >;
-  return globalScope[CONTEXT_SYMBOL];
+  try {
+    const globalScope = globalThis as unknown as Record<
+      symbol | string,
+      ContextState | undefined
+    >;
+    return globalScope[CONTEXT_SYMBOL];
+  } catch {
+    return undefined;
+  }
 }
 
 function restoreGlobalContext(
   expectedContext: ContextState,
   previousContext?: ContextState,
 ) {
-  const globalScope = globalThis as unknown as Record<
-    symbol | string,
-    ContextState | undefined
-  >;
+  try {
+    const globalScope = globalThis as unknown as Record<
+      symbol | string,
+      ContextState | undefined
+    >;
 
-  // Only restore if the global fallback still points to the context this trace
-  // installed. If another concurrent trace updated the global context in the
-  // meantime, leave it intact to avoid clobbering that run.
-  if (globalScope[CONTEXT_SYMBOL] !== expectedContext) {
-    return;
-  }
+    // Only restore if the global fallback still points to the context this trace
+    // installed. If another concurrent trace updated the global context in the
+    // meantime, leave it intact to avoid clobbering that run.
+    if (globalScope[CONTEXT_SYMBOL] !== expectedContext) {
+      return;
+    }
 
-  if (previousContext?.active) {
-    globalScope[CONTEXT_SYMBOL] = previousContext;
-  } else {
-    delete globalScope[CONTEXT_SYMBOL];
+    if (previousContext?.active) {
+      globalScope[CONTEXT_SYMBOL] = previousContext;
+    } else {
+      delete globalScope[CONTEXT_SYMBOL];
+    }
+  } catch {
+    // If global mutation is disallowed, do not crash; tracing will continue to
+    // rely on AsyncLocalStorage or module-local context.
   }
 }
 
