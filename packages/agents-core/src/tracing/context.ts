@@ -165,10 +165,11 @@ function _wrapFunctionWithTraceLifecycle<T>(
 
       return result;
     } finally {
-      currentContext.active = false;
-      // Always restore prior global context (or clear) so parallel callers do
-      // not see stale span/trace state if they share the same process.
+      // If cleanup was deferred to the streaming loop, keep the context marked
+      // active so concurrent traces do not clear it prematurely. Otherwise,
+      // mark inactive and restore now.
       if (!cleanupDeferred) {
+        currentContext.active = false;
         restoreGlobalContext(currentContext, previousContext);
       }
     }
