@@ -243,17 +243,53 @@ export function getGlobalTraceProvider(): TraceProvider {
       TraceProvider | undefined
     >;
 
-    if (!globalHolder[symbol]) {
-      globalHolder[symbol] = new TraceProvider();
+    // Avoid constructing extra providers when globalThis is frozen/sealed. We
+    // first short-circuit on existing instances, then check writability before
+    // instantiation so hardened runtimes do not leak constructors or listeners.
+    const existing = globalHolder[symbol];
+    if (existing) {
+      return existing;
     }
 
-    return globalHolder[symbol];
+    const descriptor = Object.getOwnPropertyDescriptor(globalHolder, symbol);
+    if (
+      descriptor &&
+      descriptor.writable === false &&
+      descriptor.configurable === false &&
+      !descriptor.set
+    ) {
+      return getModuleTraceProvider();
+    }
+
+    if (!descriptor) {
+      try {
+        Object.defineProperty(globalHolder, symbol, {
+          value: undefined,
+          writable: true,
+          configurable: true,
+        });
+      } catch {
+        return getModuleTraceProvider();
+      }
+    }
+
+    try {
+      const provider = new TraceProvider();
+      globalHolder[symbol] = provider;
+      return provider;
+    } catch {
+      return getModuleTraceProvider();
+    }
   } catch {
     // Hardened runtimes can freeze or seal globalThis; fall back to a
     // module-local singleton instead of throwing so tracing still works.
-    if (!moduleTraceProvider) {
-      moduleTraceProvider = new TraceProvider();
-    }
-    return moduleTraceProvider;
+    return getModuleTraceProvider();
   }
+}
+
+function getModuleTraceProvider() {
+  if (!moduleTraceProvider) {
+    moduleTraceProvider = new TraceProvider();
+  }
+  return moduleTraceProvider;
 }
