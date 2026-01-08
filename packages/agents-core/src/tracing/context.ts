@@ -8,6 +8,7 @@ type ContextState = {
   trace?: Trace;
   span?: Span<any>;
   previousSpan?: Span<any>;
+  active?: boolean;
 };
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
@@ -57,15 +58,6 @@ function setGlobalContext(context: ContextState) {
   globalScope[CONTEXT_SYMBOL] = context;
 }
 
-// Clear the global fallback to avoid leaking context across unrelated runs.
-function clearGlobalContext() {
-  const globalScope = globalThis as unknown as Record<
-    symbol | string,
-    ContextState | undefined
-  >;
-  delete globalScope[CONTEXT_SYMBOL];
-}
-
 // Retrieve the fallback context if AsyncLocalStorage has no store. This is
 // a best-effort safety net for environments that accidentally load multiple
 // copies of agents-core or lose ALS scope (e.g., certain worker runtimes).
@@ -86,7 +78,14 @@ function restoreGlobalContext(
     ContextState | undefined
   >;
 
-  if (previousContext) {
+  // Only restore if the global fallback still points to the context this trace
+  // installed. If another concurrent trace updated the global context in the
+  // meantime, leave it intact to avoid clobbering that run.
+  if (globalScope[CONTEXT_SYMBOL] !== expectedContext) {
+    return;
+  }
+
+  if (previousContext?.active) {
     globalScope[CONTEXT_SYMBOL] = previousContext;
   } else {
     delete globalScope[CONTEXT_SYMBOL];
@@ -130,8 +129,8 @@ export function getCurrentSpan() {
  */
 function _wrapFunctionWithTraceLifecycle<T>(
   fn: (trace: Trace) => Promise<T>,
+  currentContext: ContextState,
   previousContext?: ContextState,
-  currentContext?: ContextState,
 ) {
   return async () => {
     const trace = getCurrentTrace();
@@ -153,11 +152,8 @@ function _wrapFunctionWithTraceLifecycle<T>(
           streamLoopPromise.finally(async () => {
             await trace.end();
 
-            if (previousContext) {
-              setGlobalContext(previousContext);
-            } else {
-              clearGlobalContext();
-            }
+            currentContext.active = false;
+            restoreGlobalContext(currentContext, previousContext);
           });
 
           return result;
@@ -169,16 +165,11 @@ function _wrapFunctionWithTraceLifecycle<T>(
 
       return result;
     } finally {
+      currentContext.active = false;
       // Always restore prior global context (or clear) so parallel callers do
       // not see stale span/trace state if they share the same process.
       if (!cleanupDeferred) {
-        if (currentContext) {
-          restoreGlobalContext(currentContext, previousContext);
-        } else if (previousContext) {
-          setGlobalContext(previousContext);
-        } else {
-          clearGlobalContext();
-        }
+        restoreGlobalContext(currentContext, previousContext);
       }
     }
   };
@@ -205,13 +196,13 @@ export async function withTrace<T>(
         })
       : trace;
 
-  const context = { trace: newTrace };
+  const context: ContextState = { trace: newTrace, active: true };
   const previousContext = getGlobalContext();
   setGlobalContext(context);
 
   return getContextAsyncLocalStorage().run(
     context,
-    _wrapFunctionWithTraceLifecycle(fn, previousContext, context),
+    _wrapFunctionWithTraceLifecycle(fn, context, previousContext),
   );
 }
 /**
@@ -240,12 +231,12 @@ export async function getOrCreateTrace<T>(
 
   const newTrace = getGlobalTraceProvider().createTrace(options);
 
-  const newContext = { trace: newTrace };
+  const newContext: ContextState = { trace: newTrace, active: true };
   const previousContext = getGlobalContext();
   setGlobalContext(newContext);
   return getContextAsyncLocalStorage().run(
     newContext,
-    _wrapFunctionWithTraceLifecycle(fn, previousContext, newContext),
+    _wrapFunctionWithTraceLifecycle(fn, newContext, previousContext),
   );
 }
 
