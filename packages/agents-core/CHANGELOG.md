@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.3.8
+
+### Patch Changes
+
+- 3b368cb: fix: #829 Ensure generated declarations are type-checked and expose PreparedInputWithSessionResult
+- 303e95e: feat: Add per-run tracing API key support
+- 5d9b751: fix: #799 Expose raw input and validation error in tool parsing failures
+- a0fc1dc: feat: #794 Expose `ToolInputParameters` and `ToolOptions` from the top-level exports so wrappers can import the tool types
+- 20cb95f: feat: Add tool input/output guardrails to TS SDK
+- b233ea5: fix: Fix streaming cancellation to abort promptly and resolve completion on cancel
+
 ## 0.3.7
 
 ### Patch Changes

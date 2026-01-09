@@ -1,5 +1,20 @@
 # @openai/agents-openai
 
+## 0.3.8
+
+### Patch Changes
+
+- 303e95e: feat: Add per-run tracing API key support
+- 4f20c16: fix: Fix chat completions tool calls when content is present
+- 7c05117: fix: Add content: null when having tool calls for Chat Completions
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [20cb95f]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+
 ## 0.3.7
 
 ### Patch Changes

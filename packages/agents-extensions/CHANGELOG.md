@@ -1,5 +1,19 @@
 # @openai/agents-extensions
 
+## 0.3.8
+
+### Patch Changes
+
+- c6f0211: Fix : correctly extract token counts when AI SDK providers return them as objects instead of numbers (e.g. @ai-sdk/google)
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [20cb95f]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+  - @openai/agents@0.3.8
+
 ## 0.3.7
 
 ### Patch Changes
